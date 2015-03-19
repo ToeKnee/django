@@ -12,7 +12,7 @@ from django.utils.safestring import mark_safe
 from django.utils.six.moves import range
 from django.utils.translation import ugettext as _, ungettext
 
-__all__ = ('BaseFormSet', 'formset_factory', 'all_valid')
+__all__ = ('BaseFormSet', 'MultiFormSet', 'formset_factory', 'all_valid')
 
 # special field names
 TOTAL_FORM_COUNT = 'TOTAL_FORMS'
@@ -437,3 +437,200 @@ def all_valid(formsets):
         if not formset.is_valid():
             valid = False
     return valid
+
+
+@python_2_unicode_compatible
+class MultiFormSet(object):
+    """
+    A collection of instances of different Form classes.
+    """
+    def __init__(self, forms=None, data=None, files=None, auto_id='id_%s', prefix=None,
+                 initial=None, error_class=ErrorList, defaults=None):
+        self.is_bound = data is not None or files is not None
+        self.prefix = prefix or self.get_default_prefix()
+        self.auto_id = auto_id
+        self.defaults = defaults or {}
+        self.data = data or {}
+        self.files = files or {}
+        self.initial = initial
+        self.error_class = error_class
+        self._forms = forms
+        self._errors = None
+        self._non_form_errors = None
+
+    def __str__(self):
+        return self.as_table()
+
+    def __iter__(self):
+        """Yields the forms in the order they should be rendered"""
+        return iter(self.forms)
+
+    def __getitem__(self, index):
+        """Returns the form at the given index, based on the rendering order"""
+        return self.forms[index]
+
+    def __len__(self):
+        return len(self.forms)
+
+    def __bool__(self):
+        return True
+
+    def __nonzero__(self):      # Python 2 compatibility
+        return type(self).__bool__(self)
+
+    @cached_property
+    def forms(self):
+        """
+        Instantiate forms at first property access.
+        """
+        forms = [self._construct_form(i) for i in xrange(len(self._forms))]
+        return forms
+
+    def _construct_form(self, i, **kwargs):
+        """
+        Instantiates and returns the i-th form instance in a multiformset.
+        """
+        defaults = self.defaults.copy()
+        defaults.update({
+            'auto_id': self.auto_id,
+            'prefix': self.add_prefix(i),
+            'error_class': self.error_class,
+        })
+
+        if self.is_bound:
+            defaults['data'] = self.data
+            defaults['files'] = self.files
+        if self.initial and 'initial' not in kwargs:
+            try:
+                defaults['initial'] = self.initial[i]
+            except IndexError:
+                pass
+
+        defaults.update(kwargs)
+        form = self._forms[i](**defaults)
+        self.add_fields(form, i)
+        return form
+
+    @property
+    def cleaned_data(self):
+        """
+        Returns a list of form.cleaned_data dicts for every form in self.forms.
+        """
+        if not self.is_valid():
+            raise AttributeError("'%s' object has no attribute 'cleaned_data'" % self.__class__.__name__)
+        return [form.cleaned_data for form in self.forms]
+
+    @classmethod
+    def get_default_prefix(cls):
+        return 'form'
+
+    def non_form_errors(self):
+        """
+        Returns an ErrorList of errors that aren't associated with a particular
+        form -- i.e., from formset.clean(). Returns an empty ErrorList if there
+        are none.
+        """
+        if self._non_form_errors is None:
+            self.full_clean()
+        return self._non_form_errors
+
+    @property
+    def errors(self):
+        """
+        Returns a list of form.errors for every form in self.forms.
+        """
+        if self._errors is None:
+            self.full_clean()
+        return self._errors
+
+    def total_error_count(self):
+        """
+        Returns the number of errors across all forms in the formset.
+        """
+        return len(self.non_form_errors()) +\
+            sum(len(form_errors) for form_errors in self.errors)
+
+    def is_valid(self):
+        """
+        Returns True if every form in self.forms is valid.
+        """
+        if not self.is_bound:
+            return False
+        # We loop over every form.errors here rather than short circuiting on the
+        # first failure to make sure validation gets triggered for every form.
+        forms_valid = True
+        # This triggers a full clean.
+        self.errors
+        for form in self:
+            forms_valid &= form.is_valid()
+        return forms_valid and not bool(self.non_form_errors())
+
+    def full_clean(self):
+        """
+        Cleans all of self.data and populates self._errors and
+        self._non_form_errors.
+        """
+        self._errors = []
+        self._non_form_errors = self.error_class()
+
+        if not self.is_bound:  # Stop further processing.
+            return
+        for form in self.forms:
+            self._errors.append(form.errors)
+        try:
+            # Give self.clean() a chance to do cross-form validation.
+            self.clean()
+        except ValidationError as e:
+            self._non_form_errors = self.error_class(e.error_list)
+
+    def clean(self):
+        """
+        Hook for doing any extra formset-wide cleaning after Form.clean() has
+        been called on every form. Any ValidationError raised by this method
+        will not be associated with a particular form; it will be accessible
+        via formset.non_form_errors()
+        """
+        pass
+
+    def has_changed(self):
+        """
+        Returns true if data in any form differs from initial.
+        """
+        return any(form.has_changed() for form in self)
+
+    def add_fields(self, form, i):
+        """A hook for adding extra fields on to each form instance."""
+        pass
+
+    def add_prefix(self, index):
+        return '%s-%s' % (self.prefix, index)
+
+    def is_multipart(self):
+        """
+        Returns True if the formset needs to be multipart, i.e. it
+        has FileInput. Otherwise, False.
+        """
+        return any(form.is_multipart() for form in self)
+
+    @property
+    def media(self):
+        # Combine all of the forms media .
+        media = self.forms[0].media
+        for form in self:
+            media += form.media
+        return media
+
+    def as_table(self):
+        "Returns this formset rendered as HTML <tr>s -- excluding the <table></table>."
+        forms = ' '.join(form.as_table() for form in self)
+        return mark_safe(forms)
+
+    def as_p(self):
+        "Returns this formset rendered as HTML <p>s."
+        forms = ' '.join(form.as_p() for form in self)
+        return mark_safe(forms)
+
+    def as_ul(self):
+        "Returns this formset rendered as HTML <li>s."
+        forms = ' '.join(form.as_ul() for form in self)
+        return mark_safe(forms)

@@ -641,3 +641,303 @@ a look at how this might be accomplished::
 You would then render the formsets as normal. It is important to point out
 that you need to pass ``prefix`` on both the POST and non-POST cases so that
 it is rendered and processed correctly.
+
+
+
+
+
+.. class:: MultiFormSet
+
+Similar to ``BaseFormSet`` above, ``MultpleFormSet`` is a layer of abstraction to
+work with multiple forms of different types on the same page. It can
+be best compared to a data grid. Let's say you have the following
+form::
+
+    >>> from django import forms
+    >>> class CategoryForm(forms.Form):
+    ...     category = forms.CharField()
+    >>>
+    >>> class ArticleForm(forms.Form):
+    ...     title = forms.CharField()
+    ...     pub_date = forms.DateField()
+
+You might want to allow the user to create an article and category at
+once. To create a multiformset out of an ``CategoryForm`` and a
+``ArticleForm`` you would do::
+
+    >>> from django.forms.formsets import MultiFormSet
+    >>> multiformset = MultiFormSet(forms=(CategoryForm, ArticleForm))
+
+You now have created a formset named ``multi_form_set``. The formset gives you
+the ability to iterate over the forms in the formset and display them as you
+would with a regular form::
+
+    >>> multiformset = ArticleFormSet()
+    >>> for form in multiformset:
+    ...     print(form.as_table())
+    <tr><th><label for="id_form-0-category">Category:</label></th><td><input type="text" name="form-0-category" id="id_form-0-category" /></td></tr>
+    <tr><th><label for="id_form-1-title">Title:</label></th><td><input type="text" name="form-1-title" id="id_form-1-title" /></td></tr>
+    <tr><th><label for="id_form-1-pub_date">Pub date:</label></th><td><input type="text" name="form-1-pub_date" id="id_form-1-pub_date" /></td></tr>
+
+As you can see it displayed one empty form, containing the fields from both forms.
+
+Iterating over the ``formset`` will render the forms in the order they were
+created. You can change this order by providing an alternate implementation for
+the ``__iter__()`` method.
+
+Formsets can also be indexed into, which returns the corresponding form. If you
+override ``__iter__``, you will need to also override ``__getitem__`` to have
+matching behavior.
+
+.. _multiformsets-initial-data:
+
+Using initial data with a ``MultiFormSet``
+------------------------------------------
+
+Initial data is what drives the main usability of a formset. Let's
+take a look at an example::
+
+    >>> import datetime
+    >>> from django.forms.formsets import formset_factory
+    >>> from myapp.forms import ArticleForm, CategoryForm
+    >>> multiformset = MultiFormSet(
+    ...     forms=(CategoryForm, ArticleForm),
+    ...     initial=[
+    ...         {'category': "Front page"},
+    ...         {'title': 'Django is now open source',
+    ...          'pub_date': datetime.date.today(),}
+    ...     ],
+    ... )
+    ...
+    >>> for form in formset:
+    ...     print(form.as_table())
+    <tr><th><label for="id_form-0-category">Category:</label></th><td><input type="text" name="form-0-category" value="Front page" id="id_form-0-category" /></td></tr>
+    <tr><th><label for="id_form-1-title">Title:</label></th><td><input type="text" name="form-1-title" id="id_form-1-title" /></td></tr>
+    <tr><th><label for="id_form-1-pub_date">Pub date:</label></th><td><input type="text" name="form-1-pub_date" id="id_form-1-pub_date" /></td></tr>
+
+There are a total of two forms showing above. Each containing the
+appropriate initial data that was passed in. Also note that we are
+passing in a list of dictionaries as the initial data.
+
+Formset validation
+------------------
+
+Validation with a multiformset is almost identical to a regular
+``Form``. There is an ``is_valid`` method on the multiformset to provide a
+convenient way to validate all forms in the multiformset::
+
+    >>> import datetime
+    >>> from myapp.forms import ArticleForm, CategoryForm
+    >>> multiformset = MultiFormSet(
+    ...     forms=(CategoryForm, ArticleForm),
+    ...     data={
+    ...         'form-0-category': "Front page",
+    ...         'form-1-title': 'Django is now open source',
+    ...         'form-1-pub_date': datetime.date.today(),
+    ...     },
+    ... )
+    >>> multiformset.is_valid()
+    True
+
+If we provide an invalid article::
+
+    >>> data = {
+    ...     'form-0-category': 'Front page',
+    ...     'form-1-title': 'Test',
+    ...     'form-1-pub_date': '', # <-- this date is missing but required
+    ... }
+    >>> multiformset = MultiFormSet(
+    ...     forms=(CategoryForm, ArticleForm),
+    ...     data=data,
+    ...)
+    >>> multiformset.is_valid()
+    False
+    >>> multiformset.errors
+    [{}, {'pub_date': ['This field is required.']}]
+
+As we can see, ``formset.errors`` is a list whose entries correspond to the
+forms in the formset. Validation was performed for each of the two forms, and
+the expected error message appears for the second item.
+
+.. method:: MultiFormSet.total_error_count()
+
+To check how many errors there are in the formset, we can use the
+``total_error_count`` method::
+
+    >>> # Using the previous example
+    >>> formset.errors
+    [{}, {'pub_date': ['This field is required.']}]
+    >>> len(formset.errors)
+    2
+    >>> formset.total_error_count()
+    1
+
+We can also check if form data differs from the initial data (i.e. the form was
+sent without any data)::
+
+    >>> data = {
+    ...     'form-0-category': '',
+    ...     'form-1-title': '',
+    ...     'form-1-pub_date': '',
+
+    ... }
+    >>> multiformset = MultiFormSet(
+    ...     forms=(CategoryForm, ArticleForm),
+    ...     data=data,
+    ...)
+    >>> multiformset.has_changed()
+    False
+
+
+Custom formset validation
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A formset has a ``clean`` method similar to the one on a ``Form`` class. This
+is where you define your own validation that works at the formset level::
+
+    >>> from django.forms.formsets import MultiFormSet
+    >>> from myapp.forms import ArticleForm, CategoryForm
+
+    >>> class CategoryArticleFormSet(MultiFormSet):
+    ...     def clean(self):
+    ...         """Checks that category and article have different titles."""
+    ...         if any(self.errors):
+    ...             # Don't bother validating the formset unless each form is valid on its own
+    ...             return
+    ...         if self.forms[0].clenead_data['category'] == self.forms[1].cleaned_data['title']
+    ...             raise forms.ValidationError("Article must have a different title from the category.")
+
+    >>> data = {
+    ...     'form-0-category': 'Test',
+    ...     'form-1-title': 'Test',
+    ...     'form-1-pub_date': '1912-06-23',
+    ... }
+    >>> multiformset = MultiFormSet(
+    ...     forms=(CategoryForm, ArticleForm),
+    ...     data=data,
+    ...)
+    >>> multiformset.is_valid()
+    False
+    >>> formset.errors
+    [{}, {}]
+    >>> formset.non_form_errors()
+    [Article must have a different title from the category.]
+
+The multiformset ``clean`` method is called after all the ``Form.clean`` methods
+have been called. The errors will be found using the ``non_form_errors()``
+method on the multiformset.
+
+
+Adding additional fields to a multiformset
+------------------------------------------
+
+If you need to add additional fields to the multiformset this can be
+easily accomplished. The multiformset class provides an ``add_fields``
+method. You can simply override this method to add your own fields or
+even redefine the default fields/attributes of the order and deletion
+fields::
+
+    >>> from django.forms.formsets import MultiFormSet
+    >>> from myapp.forms import ArticleForm, CategoryForm
+
+    >>> class CategoryArticleFormSet(MultiFormSet):
+    ...     def add_fields(self, form, index):
+    ...         super(CategoryArticleFormSet, self).add_fields(form, index)
+    ...         form.fields["my_field"] = forms.CharField()
+
+    >>> multiformset = MultiFormSet(
+    ...     forms=(CategoryForm, ArticleForm),
+    ...)
+    >>> for form in multiformset:
+    ...     print(form.as_table())
+    <tr><th><label for="id_form-0-category">Category:</label></th><td><input type="text" name="form-0-category" id="id_form-0-category" /></td></tr>
+    <tr><th><label for="id_form-0-my_field">My field:</label></th><td><input type="text" name="form-0-my_field" id="id_form-0-my_field" /></td></tr>
+    <tr><th><label for="id_form-1-title">Title:</label></th><td><input type="text" name="form-1-title" id="id_form-1-title" /></td></tr>
+    <tr><th><label for="id_form-1-pub_date">Pub date:</label></th><td><input type="text" name="form-1-pub_date" id="id_form-1-pub_date" /></td></tr>
+    <tr><th><label for="id_form-1-my_field">My field:</label></th><td><input type="text" name="form-1-my_field" id="id_form-1-my_field" /></td></tr>
+
+
+Using a multiformset in views and templates
+-------------------------------------------
+
+Using a multiformset inside a view is as easy as using a regular
+``Form`` class.  Let's look at a sample view::
+
+    from django.shortcuts import render_to_response
+    from myapp.forms import ArticleForm, CategoryForm
+
+    def manage_articles(request):
+        forms = (CategoryForm, ArticleForm)
+        if request.method == 'POST':
+            multiformset = MultiFormSet(
+                forms,
+                request.POST,
+                request.FILES,
+            )
+
+            if multiformset.is_valid():
+                # do something with the multiformset.cleaned_data
+                pass
+        else:
+            multiformset = MultiFormSet(forms)
+        return render_to_response('manage_articles.html', {'multiformset': multiformset})
+
+The ``manage_articles.html`` template might look like this:
+
+.. code-block:: html+django
+
+    <form method="post" action="">
+        <table>
+            {% for form in multiformset %}
+            {{ form }}
+            {% endfor %}
+        </table>
+    </form>
+
+However there's a slight shortcut for the above by letting the multiformset itself
+deal with the forms:
+
+.. code-block:: html+django
+
+    <form method="post" action="">
+        <table>
+            {{ formset }}
+        </table>
+    </form>
+
+The above ends up calling the ``as_table`` method on the formset class.
+
+
+Using more than one multiformset in a view
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You are able to use more than one multiformset in a view if you like. Multiformsets
+borrow much of its behavior from forms. With that said you are able to use
+``prefix`` to prefix multiformset form field names with a given value to allow
+more than one multiformset to be sent to a view without name clashing. Lets take
+a look at how this might be accomplished::
+
+    from django.forms.formsets import formset_factory
+    from django.shortcuts import render_to_response
+    from myapp.forms import ArticleForm, BookForm, CategoryForm
+
+    def manage_articles(request):
+        article_forms = (CategoryForm, ArticleForm)
+        book_forms = (CategoryForm, BookForm)
+        if request.method == 'POST':
+            article_formset = MultiFormSet(article_forms, request.POST, request.FILES, prefix='articles')
+            book_formset = MultiFormSet(book_forms, request.POST, request.FILES, prefix='books')
+            if article_formset.is_valid() and book_formset.is_valid():
+                # do something with the cleaned_data on the formsets.
+                pass
+        else:
+            article_formset = MultiFormSet(article_forms, prefix='articles')
+            book_formset = MultiFormSet(book_forms, prefix='books')
+        return render_to_response('manage_articles.html', {
+            'article_formset': article_formset,
+            'book_formset': book_formset,
+        })
+
+You would then render the multiformsets as normal. It is important to point out
+that you need to pass ``prefix`` on both the POST and non-POST cases so that
+it is rendered and processed correctly.
